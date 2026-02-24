@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+@layer base {
+    body {
+        font-family: 'Poppins', sans-serif;
+        @apply bg-[#FFF9F5] text-[#5D4037];
+        overscroll-behavior-y: contain;
+        -webkit-tap-highlight-color: transparent;
+    }
+}
+
+.font-brand {
+    font-family: 'Lilita One', cursive;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+.glass-card {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+.premium-shadow {
+    box-shadow: 0 10px 30px -5px rgba(93, 64, 55, 0.08);
+}
+
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+    -webkit-appearance: none !important;
+    margin: 0 !important;
+}
+
+input[type=number] {
+    -moz-appearance: textfield !important;
+    appearance: textfield !important;
+}
+
+input,
+select,
+button {
+    font-size: 16px !important;
+}
+
+input[type="date"] {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    z-index: -1 !important;
+    display: block !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+}

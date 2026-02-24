@@ -1,0 +1,5 @@
+{
+  "name": "Sonu Ice Cream Shop",
+  "description": "Professional distribution and settlement management system for ice cream vendors. Supports offline persistence, multi-dispatch rounds, and immutable historical accounting.",
+  "requestFramePermissions": []
+}

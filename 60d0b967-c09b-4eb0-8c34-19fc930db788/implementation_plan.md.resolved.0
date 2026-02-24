@@ -1,0 +1,120 @@
+# Google Drive Data Persistence Implementation
+
+## Problem Statement
+
+The application currently stores all data in browser localStorage, which means data is lost when the browser cache is cleared or reset. There's existing Google Drive sync code in the application, but it's not working properly. The user needs a reliable cloud backup solution to prevent data loss.
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Google Cloud Console Setup Required**
+> 
+> To use Google Drive sync, you'll need to create a Google Cloud Project and obtain OAuth credentials:
+> 
+> 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+> 2. Create a new project (or use existing)
+> 3. Enable the **Google Drive API**
+> 4. Create OAuth 2.0 credentials (Web application)
+> 5. Add authorized JavaScript origins: `http://localhost:3000` and your production domain
+> 6. Copy the Client ID (format: `xxxxx.apps.googleusercontent.com`)
+> 
+> **Would you like me to:**
+> - Proceed with fixing the existing Google Drive implementation? (Requires you to set up Google Cloud Console)
+> - OR implement an alternative solution like Google Sheets API or a simple backend?
+
+## Proposed Changes
+
+### [MODIFY] [App.tsx](file:///c:/Users/SONU%20MAHTO/Downloads/sonu-ice-cream-shop%20(1)/App.tsx)
+
+**Current Issues:**
+1. Google Identity Services (GIS) library not loaded in HTML
+2. Drive sync creates new files on each upload instead of updating existing file
+3. No automatic sync on data changes
+4. Error handling could be improved
+
+**Fixes to implement:**
+
+1. **Add Google Identity Services Script** (in index.html)
+   - Load the GIS library required for OAuth authentication
+
+2. **Fix File Update Logic**
+   - Store `driveFileId` after first upload
+   - Update existing file instead of creating duplicates
+   - Use PATCH method for updates
+
+3. **Add Auto-Sync Feature**
+   - Optional auto-sync on data changes
+   - Debounced sync to avoid excessive API calls
+   - Visual indicator for sync status
+
+4. **Improve Error Handling**
+   - Better error messages for common issues
+   - Token expiration handling
+   - Network error recovery
+
+5. **Add Conflict Resolution**
+   - Compare timestamps before overwriting
+   - Option to merge or choose version
+
+---
+
+### [MODIFY] [index.html](file:///c:/Users/SONU%20MAHTO/Downloads/sonu-ice-cream-shop%20(1)/index.html)
+
+**Changes:**
+- Add Google Identity Services (GIS) script tag in the `<head>` section
+- This is required for OAuth authentication to work
+
+---
+
+### [MODIFY] [types.ts](file:///c:/Users/SONU%20MAHTO/Downloads/sonu-ice-cream-shop%20(1)/types.ts)
+
+**Changes:**
+- The [DatabaseState](file:///c:/Users/SONU%20MAHTO/Downloads/sonu-ice-cream-shop%20%281%29/types.ts#58-69) interface already has `lastDriveSync` and `driveFileId` fields (lines 66-67)
+- No changes needed
+
+## Verification Plan
+
+### Manual Verification
+
+Since this is a frontend-only application with Google OAuth integration, verification will be manual:
+
+1. **Setup Google Cloud Console** (User action required)
+   - Create project and enable Drive API
+   - Create OAuth credentials
+   - Note down Client ID
+
+2. **Test Authentication Flow**
+   - Open the app at `http://localhost:3000`
+   - Navigate to Manage → Cloud tab
+   - Enter the Google Client ID
+   - Click "Authorize Google Account"
+   - Verify OAuth popup appears and authentication succeeds
+
+3. **Test Upload Functionality**
+   - Add some test data (products, salesmen, dispatches)
+   - Click "Upload" button
+   - Verify success message appears
+   - Check Google Drive for the file `sonu_ice_cream_data.json`
+
+4. **Test Update (Not Create Duplicate)**
+   - Modify some data in the app
+   - Click "Upload" again
+   - Verify only ONE file exists in Google Drive (not duplicates)
+   - Download and verify the file contains updated data
+
+5. **Test Download/Restore**
+   - Clear browser localStorage or use incognito mode
+   - Login to the app
+   - Navigate to Manage → Cloud
+   - Authorize and click "Download"
+   - Verify data is restored correctly
+
+6. **Test Data Persistence After Browser Reset**
+   - Upload data to Drive
+   - Clear browser cache/localStorage
+   - Restore from Drive
+   - Verify all data (products, salesmen, dispatches, settlements) is intact
+
+### Automated Tests
+
+No automated tests available for this frontend-only application. All verification will be manual through the browser.

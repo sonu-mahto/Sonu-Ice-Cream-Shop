@@ -1,0 +1,51 @@
+# Walkthrough: Firebase Cloud Synchronization
+
+I've successfully integrated **Firebase Firestore** into your application to provide reliable, persistent cloud storage. This prevents data loss when your browser cache is cleared.
+
+## Changes Made
+
+1.  **Firebase SDK Integration**: Added `firebase` as a dependency and created [firebase.ts](file:///c:/Users/SONU%20MAHTO/Downloads/sonu-ice-cream-shop%20%281%29/firebase.ts) for initialization.
+2.  **Modern Sync UI**: Replaced the broken Google Drive panel with a sleek Firebase Sync panel in the **Manage → Cloud** tab.
+3.  **Auto-Sync Feature**: Added a "Set and Forget" auto-sync toggle that automatically backups your data every 5 seconds after a change.
+4.  **Flexible Configuration**: You can now paste your Firebase Web Config directly into the app UI.
+
+## How to Set Up (One-Time Setup)
+
+To enable cloud sync, follow these simple steps:
+
+1.  Go to the [Firebase Console](https://console.firebase.google.com/).
+2.  Create a project named **"Sonu Ice Cream"**.
+3.  In the left sidebar, go to **Build → Firestore Database** and click **Create database**.
+4.  Choose **"Start in test mode"** and select a location close to you.
+5.  Go to **Project Settings** (gear icon) → **General**.
+6.  Scroll down to "Your apps", click the **Web icon (</>)**, and register your app.
+7.  Copy the `firebaseConfig` object (the part inside the `{ ... }`).
+8.  Open your app, go to **Manage → Cloud**, paste the config, and click **Save Configuration**.
+
+## How to Use
+
+### Cloud Login & Multi-Device Support
+- **Access Anywhere**: You can now open your app link on **any phone or computer**.
+- **Secure Access**: Since your shop data is linked to your **ID and Password**, just enter them on any new device.
+- **Auto-Fetch**: Once you log in, the app will automatically fetch all your products and records from the cloud!
+
+### Manual Backup/Restore
+- **Upload**: Click the orange **Upload** button to force a backup of your current local data to the cloud.
+- **Download**: Click **Download** to restore your data from the cloud. This will overwrite whatever is currently in your browser.
+
+### Auto-Sync (Recommended)
+- Toggle **Auto-Sync** to **ON**.
+- The app will now automatically save your data to the cloud whenever you make a change (with a 5-second delay).
+- You'll see a spinning icon when sync is in progress.
+
+---
+
+> [!IMPORTANT]
+> **Share with Caution**: When you share your app link, anyone who knows your **ID and Password** can access and edit your store data. Keep your credentials safe!
+
+> [!TIP]
+> **Pro Tip**: Even if you reset your browser or switch devices, just log in with the same username and password to get all your records back instantly!
+
+render_diffs(file:///c:/Users/SONU%20MAHTO/Downloads/sonu-ice-cream-shop%20(1)/App.tsx)
+render_diffs(file:///c:/Users/SONU%20MAHTO/Downloads/sonu-ice-cream-shop%20(1)/firebase.ts)
+render_diffs(file:///c:/Users/SONU%20MAHTO/Downloads/sonu-ice-cream-shop%20(1)/types.ts)

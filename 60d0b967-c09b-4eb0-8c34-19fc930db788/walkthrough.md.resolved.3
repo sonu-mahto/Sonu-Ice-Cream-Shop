@@ -1,0 +1,35 @@
+# Walkthrough: Cloud Sync & Password Recovery
+
+I've implemented a robust **Cloud Sync** and **Security** system for your application. Here's how everything works.
+
+## New Features
+
+### 1. Secret Recovery Phrase (Forgot Password)
+- **Safe Setup**: When you first set up your shop, you'll be asked for a **"Secret Recovery Phrase"**.
+- **Self-Service Reset**: If you ever forget your password, click the **"Forgot Password?"** link on the login screen.
+- **How it works**: Enter your username and your Secret Phrase to set a brand new password immediately!
+
+### 2. Manage Security In-App
+- **Missing Phrase?**: If you missed the setup or want to change your phrase, go to **Manage → Cloud**.
+- **Security Section**: I've added a new **"Security & Recovery"** section where you can set or update your phrase anytime.
+- **Locked for Safety**: Once set, the phrase is "Locked" and synchronized to your cloud account instantly.
+
+### 3. Multi-Device Cloud Login
+- **Access Anywhere**: Open your app link on any device.
+- **Automatic Sync**: Once you log in, your products and sales records will automatically download from the cloud.
+- **Real-Time backup**: Every change you make is saved to the cloud within 5 seconds automatically.
+
+## How to Get Started
+
+1.  **Configure Firebase**: Go to **Manage → Cloud** and follow the instructions to link your Firebase project (one-time setup).
+2.  **Initial Setup**: On the first login, create your Admin Username, Password, and **Secret Recovery Phrase**.
+3.  **Share the Link**: Give your managers the ID and Password. They can log in from their own phones and see everything!
+
+---
+
+> [!IMPORTANT]
+> **Keep your Recovery Phrase safe**: Just like your password, anyone with your Recovery Phrase can reset your account and access your store data.
+
+render_diffs(file:///c:/Users/SONU MAHTO/Downloads/sonu-ice-cream-shop (1)/App.tsx)
+render_diffs(file:///c:/Users/SONU MAHTO/Downloads/sonu-ice-cream-shop (1)/db.ts)
+render_diffs(file:///c:/Users/SONU MAHTO/Downloads/sonu-ice-cream-shop (1)/types.ts)

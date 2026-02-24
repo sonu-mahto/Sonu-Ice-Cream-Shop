@@ -1,0 +1,6 @@
+{
+  "artifactType": "ARTIFACT_TYPE_TASK",
+  "summary": "Completed the setup for converting the web app to an Android APK. All Capacitor dependencies are installed and the platform is added.",
+  "updatedAt": "2026-02-17T16:45:51.262456200Z",
+  "version": "8"
+}
