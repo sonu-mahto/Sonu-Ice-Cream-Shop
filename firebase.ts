@@ -1,33 +1,15 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
-// Helper to get config from localStorage
-const getFirebaseConfig = () => {
-    const saved = localStorage.getItem('firebase_config');
-    if (saved) {
-        try {
-            return JSON.parse(saved);
-        } catch (e) {
-            console.error("Invalid Firebase config in localStorage", e);
-        }
-    }
-    return null;
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-const firebaseConfig = getFirebaseConfig();
-
-// Initialize Firebase only if config is available
-let app;
-let firestoreDb: any = null;
-
-if (firebaseConfig && firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY") {
-    try {
-        app = initializeApp(firebaseConfig);
-        firestoreDb = getFirestore(app);
-    } catch (e) {
-        console.error("Firebase initialization failed", e);
-    }
-}
-
-export const db = firestoreDb;
+const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app);
 export default app;

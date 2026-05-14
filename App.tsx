@@ -36,10 +36,13 @@ import {
   AlertCircle,
   ExternalLink,
   ShieldCheck,
-  Share2
+  Share2,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { loadDB, saveDB, hashPassword } from './db';
 import { Product, Salesman, DispatchRecord, Settlement, PaymentRecord, DatabaseState } from './types';
+import { CapacitorUpdater } from '@capgo/capacitor-updater';
 
 const FIREBASE_COLLECTION = 'ice_cream_shops';
 
@@ -51,6 +54,17 @@ const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number, errorMessage: s
       setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
     ),
   ]);
+};
+
+// Helper to get local date string in YYYY-MM-DD format
+const getLocalDateString = () => {
+  const d = new Date();
+  const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+  const nd = new Date(utc + (3600000 * 5.5)); // IST offset is +5.5
+  const year = nd.getFullYear();
+  const month = String(nd.getMonth() + 1).padStart(2, '0');
+  const day = String(nd.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 // Shared Components
@@ -122,6 +136,16 @@ const DateSelector = ({ date, onChange }: { date: string, onChange: (d: string) 
     }
   };
 
+  const handleChange = (val: string) => {
+    const today = getLocalDateString();
+    if (val > today) {
+      alert("Future dates are not allowed!");
+      onChange(today);
+    } else {
+      onChange(val);
+    }
+  };
+
   return (
     <div
       onClick={handleContainerClick}
@@ -136,8 +160,8 @@ const DateSelector = ({ date, onChange }: { date: string, onChange: (d: string) 
         ref={dateInputRef}
         type="date"
         value={date}
-        max={new Date().toISOString().split('T')[0]}
-        onChange={(e) => onChange(e.target.value)}
+        max={getLocalDateString()}
+        onChange={(e) => handleChange(e.target.value)}
         className="opacity-0 absolute pointer-events-none"
         style={{ colorScheme: 'light' }}
       />
@@ -152,13 +176,21 @@ export default function App() {
     ownerUsername: null,
   });
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(getLocalDateString());
+  const [selectedSalesmanId, setSelectedSalesmanId] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem('sonu_session');
     if (saved) setSession(JSON.parse(saved));
+
+    // Notify Capacitor Updater that the app has successfully launched
+    CapacitorUpdater.notifyAppReady().catch((err: any) => {
+      console.warn('CapacitorUpdater notifyAppReady failed (likely web environment):', err);
+    });
   }, []);
+
+  // Background cleanup effect removed to preserve user production data
 
   // Real-time Cloud Sync Listener
   useEffect(() => {
@@ -354,22 +386,27 @@ export default function App() {
   };
 
   if (!session.isLoggedIn) {
-    const hasCloudConfig = localStorage.getItem('firebase_config') !== null;
     return <LoginScreen
-      isSetup={db.ownerHash === null && !hasCloudConfig}
-      isCloudReady={hasCloudConfig}
+      isSetup={db.ownerHash === null}
       onLogin={handleLogin}
       onResetPassword={handleResetPassword}
       loading={loading}
     />;
   }
 
+  const handleTabChange = (tabId: string) => {
+    setActiveTab(tabId);
+    if (tabId === 'dashboard') {
+      setSelectedDate(getLocalDateString());
+    }
+  };
+
   const renderContent = () => {
     switch (activeTab) {
-      case 'dashboard': return <DashboardView db={db} setDb={setDb} selectedDate={selectedDate} setSelectedDate={setSelectedDate} onOpenReports={() => setActiveTab('reports')} />;
-      case 'dispatch': return <DispatchView db={db} setDb={setDb} selectedDate={selectedDate} setSelectedDate={setSelectedDate} />;
-      case 'returns': return <ReturnsView db={db} setDb={setDb} selectedDate={selectedDate} setSelectedDate={setSelectedDate} />;
-      case 'settle': return <SettlementView db={db} setDb={setDb} selectedDate={selectedDate} setSelectedDate={setSelectedDate} />;
+      case 'dashboard': return <DashboardView db={db} setDb={setDb} selectedDate={selectedDate} setSelectedDate={setSelectedDate} setActiveTab={handleTabChange} setSelectedSalesmanId={setSelectedSalesmanId} onOpenReports={() => handleTabChange('reports')} />;
+      case 'dispatch': return <DispatchView db={db} setDb={setDb} selectedDate={selectedDate} setSelectedDate={setSelectedDate} sid={selectedSalesmanId} setSid={setSelectedSalesmanId} />;
+      case 'returns': return <ReturnsView db={db} setDb={setDb} selectedDate={selectedDate} setSelectedDate={setSelectedDate} sid={selectedSalesmanId} setSid={setSelectedSalesmanId} />;
+      case 'settle': return <SettlementView db={db} setDb={setDb} selectedDate={selectedDate} setSelectedDate={setSelectedDate} sid={selectedSalesmanId} setSid={setSelectedSalesmanId} />;
       case 'ledger': return <LedgerView db={db} setDb={setDb} />;
       case 'reports': return <ReportsView db={db} />;
       case 'manage': return <ManageView db={db} setDb={setDb} onLogout={handleLogout} />;
@@ -388,39 +425,27 @@ export default function App() {
       <main className="flex-1 overflow-hidden relative">
         {renderContent()}
       </main>
-      <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Navbar activeTab={activeTab} setActiveTab={handleTabChange} />
     </div>
   );
 }
 
 // --- Views ---
 
-const LoginScreen = ({ isSetup, isCloudReady, onLogin, onResetPassword, loading }: { isSetup: boolean, isCloudReady: boolean, onLogin: (u: string, p: string, rp?: string) => Promise<void>, onResetPassword: (u: string, rp: string, np: string) => Promise<boolean>, loading: boolean }) => {
+type LoginMode = 'select' | 'setup' | 'cloud' | 'recovery' | 'login';
+
+const LoginScreen = ({ isSetup, onLogin, onResetPassword, loading }: { isSetup: boolean, onLogin: (u: string, p: string, rp?: string) => Promise<void>, onResetPassword: (u: string, rp: string, np: string) => Promise<boolean>, loading: boolean }) => {
+  const [mode, setMode] = useState<LoginMode>(isSetup ? 'select' : 'login');
   const [username, setUsername] = useState('');
   const [pass, setPass] = useState('');
   const [recoveryPhrase, setRecoveryPhrase] = useState('');
-  const [isRecovering, setIsRecovering] = useState(false);
-  const [isLinkingCloud, setIsLinkingCloud] = useState(false);
-  const [cloudConfigJson, setCloudConfigJson] = useState('');
   const [newPass, setNewPass] = useState('');
+  const [showPass, setShowPass] = useState(false);
 
   const handleAction = async () => {
-    if (isLinkingCloud) {
-      try {
-        const config = JSON.parse(cloudConfigJson);
-        if (!config.apiKey || !config.projectId) throw new Error("Invalid Config");
-        localStorage.setItem('firebase_config', JSON.stringify(config));
-        alert("Cloud Linked! The app will now restart to apply settings.");
-        window.location.reload();
-      } catch (e) {
-        alert("Invalid Firebase Configuration JSON. Please copy it exactly from your Manage > Cloud tab.");
-      }
-      return;
-    }
-
-    if (isRecovering) {
+    if (mode === 'recovery') {
       const success = await onResetPassword(username, recoveryPhrase, newPass);
-      if (success) setIsRecovering(false);
+      if (success) setMode('login');
     } else {
       await onLogin(username, pass, recoveryPhrase);
     }
@@ -432,36 +457,52 @@ const LoginScreen = ({ isSetup, isCloudReady, onLogin, onResetPassword, loading 
       <div className="absolute -bottom-20 -left-10 w-60 h-60 bg-orange-100/50 rounded-full blur-3xl"></div>
 
       <div className="w-full max-w-md flex flex-col items-center justify-center relative z-10 py-10 min-h-screen">
-        {(isCloudReady || isRecovering) && (
-          <div className={`absolute top-6 right-6 flex items-center gap-1 ${isRecovering ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-green-50 text-green-600 border-green-100'} px-3 py-1 rounded-full border animate-pulse`}>
-            {isRecovering ? <AlertCircle size={10} /> : <Cloud size={10} />}
-            <span className="text-[7px] font-black uppercase tracking-widest">{isRecovering ? "Recovery Mode" : "Cloud Active"}</span>
-          </div>
-        )}
+        <div className={`absolute top-6 right-6 flex items-center gap-1 bg-green-50 text-green-600 border-green-100 px-3 py-1 rounded-full border`}>
+          <Cloud size={10} />
+          <span className="text-[7px] font-black uppercase tracking-widest">Cloud Active</span>
+        </div>
 
         <div className="h-28 w-28 bg-gradient-to-br from-[#FFAB91] to-[#FFCCBC] rounded-[40px] flex items-center justify-center mb-10 shadow-2xl group">
           <IceCream size={56} className="text-white group-hover:scale-110 transition-transform" />
         </div>
+
         <div className="text-center mb-10 text-balance">
           <h2 className="font-brand text-4xl text-[#5D4037] mb-2 tracking-wide leading-tight">Sonu Ice Cream</h2>
           <p className="text-xs font-semibold text-[#8D6E63] uppercase tracking-[0.2em] opacity-70">
-            {isRecovering ? "Reset Your Password" : isSetup ? "Create Admin Account" : isCloudReady ? "Cloud Sync Login" : "Store Manager Login"}
+            {mode === 'select' ? "Get Started" : mode === 'recovery' ? "Reset Password" : mode === 'setup' ? "Initial Setup" : "Store Manager Login"}
           </p>
         </div>
 
         <div className="w-full flex flex-col gap-4">
-          {isLinkingCloud ? (
-            <div className="relative">
-              <div className="absolute left-5 top-5 text-[#FF8A65]"><ShieldCheck size={18} /></div>
-              <textarea
-                placeholder='Paste your Firebase Configuration JSON here...'
-                value={cloudConfigJson}
-                onChange={(e) => setCloudConfigJson(e.target.value)}
-                className="w-full pl-14 pr-5 py-5 bg-[#FFF3E0] border border-[#FFE0B2] rounded-[24px] focus:ring-2 focus:ring-[#FFCCBC] focus:bg-white outline-none font-mono text-[10px] text-[#5D4037] transition-all shadow-sm h-32 resize-none"
-              />
-              <p className="text-[8px] text-[#A1887F] mt-2 px-4 font-bold uppercase tracking-widest opacity-60">You can find this in your old phone under Manage &gt; Cloud</p>
+          {mode === 'select' ? (
+            <div className="flex flex-col gap-4 py-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <button
+                onClick={() => setMode('cloud')}
+                className="w-full bg-white p-6 rounded-[32px] border border-[#FFF1E0] shadow-sm hover:shadow-md transition-all active:scale-95 flex items-center gap-4 group"
+              >
+                <div className="bg-blue-50 p-3 rounded-2xl group-hover:bg-blue-100 transition-colors">
+                  <Cloud className="text-blue-500" size={24} />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-bold text-[#5D4037]">Login with Cloud Account</h3>
+                  <p className="text-[9px] text-[#A1887F] font-bold uppercase tracking-widest mt-1">Existing users</p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => setMode('setup')}
+                className="w-full bg-white p-6 rounded-[32px] border border-[#FFF1E0] shadow-sm hover:shadow-md transition-all active:scale-95 flex items-center gap-4 group"
+              >
+                <div className="bg-orange-50 p-3 rounded-2xl group-hover:bg-orange-100 transition-colors">
+                  <Plus className="text-[#FF8A65]" size={24} />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-bold text-[#5D4037]">Setup New Admin Account</h3>
+                  <p className="text-[9px] text-[#A1887F] font-bold uppercase tracking-widest mt-1">First time users</p>
+                </div>
+              </button>
             </div>
-          ) : isRecovering ? (
+          ) : mode === 'recovery' ? (
             <>
               <div className="relative">
                 <div className="absolute left-5 top-1/2 -translate-y-1/2 text-[#FF8A65]"><AlertCircle size={18} /></div>
@@ -470,8 +511,11 @@ const LoginScreen = ({ isSetup, isCloudReady, onLogin, onResetPassword, loading 
               </div>
               <div className="relative">
                 <div className="absolute left-5 top-1/2 -translate-y-1/2 text-[#A1887F]"><Lock size={18} /></div>
-                <input type="password" placeholder="New Password" value={newPass} onChange={(e) => setNewPass(e.target.value)}
-                  className="w-full pl-14 pr-5 py-5 bg-white/60 border border-white rounded-[24px] focus:ring-2 focus:ring-[#FFCCBC] focus:bg-white outline-none font-medium text-[#5D4037] transition-all shadow-sm" />
+                <input type={showPass ? "text" : "password"} placeholder="New Password" value={newPass} onChange={(e) => setNewPass(e.target.value)}
+                  className="w-full pl-14 pr-12 py-5 bg-white/60 border border-white rounded-[24px] focus:ring-2 focus:ring-[#FFCCBC] focus:bg-white outline-none font-medium text-[#5D4037] transition-all shadow-sm" />
+                <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-5 top-1/2 -translate-y-1/2 text-[#A1887F]">
+                  {showPass ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
               </div>
             </>
           ) : (
@@ -484,11 +528,14 @@ const LoginScreen = ({ isSetup, isCloudReady, onLogin, onResetPassword, loading 
 
               <div className="relative">
                 <div className="absolute left-5 top-1/2 -translate-y-1/2 text-[#A1887F]"><Lock size={18} /></div>
-                <input type="password" placeholder="Password" value={pass} onChange={(e) => setPass(e.target.value)}
-                  className="w-full pl-14 pr-5 py-5 bg-white/60 border border-white rounded-[24px] focus:ring-2 focus:ring-[#FFCCBC] focus:bg-white outline-none font-medium text-[#5D4037] transition-all shadow-sm" />
+                <input type={showPass ? "text" : "password"} placeholder="Password" value={pass} onChange={(e) => setPass(e.target.value)}
+                  className="w-full pl-14 pr-12 py-5 bg-white/60 border border-white rounded-[24px] focus:ring-2 focus:ring-[#FFCCBC] focus:bg-white outline-none font-medium text-[#5D4037] transition-all shadow-sm" />
+                <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-5 top-1/2 -translate-y-1/2 text-[#A1887F]">
+                  {showPass ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
               </div>
 
-              {isSetup && (
+              {mode === 'setup' && (
                 <div className="relative">
                   <div className="absolute left-5 top-1/2 -translate-y-1/2 text-[#FF8A65]"><AlertCircle size={18} /></div>
                   <input type="text" placeholder="Secret Recovery Phrase" value={recoveryPhrase} onChange={(e) => setRecoveryPhrase(e.target.value)}
@@ -500,51 +547,54 @@ const LoginScreen = ({ isSetup, isCloudReady, onLogin, onResetPassword, loading 
           )}
         </div>
 
-        <div className="flex flex-col items-center gap-4 mt-8 w-full">
-          {!isSetup && (
+        {mode !== 'select' && (
+          <button onClick={handleAction} disabled={loading}
+            className={`w-full mt-6 ${mode === 'recovery' ? 'bg-[#5D4037]' : 'bg-gradient-to-r from-[#FF8A65] to-[#FFAB91]'} text-white font-bold text-lg py-5 rounded-[28px] hover:shadow-xl hover:shadow-orange-200/50 active:scale-95 transition-all flex items-center justify-center gap-3`}>
+            {loading ? "Processing..." : (mode === 'recovery' ? "Reset Password" : mode === 'setup' ? "Setup System" : "Sign In")} {!loading && <ArrowRight size={20} />}
+          </button>
+        )}
+
+        <div className="flex flex-col items-center gap-4 mt-4 w-full">
+          {(mode === 'login' || mode === 'cloud') && (
             <button
-              onClick={() => setIsRecovering(!isRecovering)}
+              onClick={() => setMode('recovery')}
               className="w-full text-[10px] font-black text-[#FF8A65] uppercase tracking-[0.2em] py-4 border border-[#FFCCBC] rounded-[22px] bg-white/50 hover:bg-white transition-all active:scale-95"
             >
-              {isRecovering ? "Back to Login" : "Forgot Password?"}
+              Forgot Password?
             </button>
           )}
 
-          {!isCloudReady && !isRecovering && (
+          {mode !== 'login' && mode !== 'select' && (
             <button
-              onClick={() => setIsLinkingCloud(!isLinkingCloud)}
+              onClick={() => setMode(isSetup ? 'select' : 'login')}
               className="w-full text-[10px] font-black text-[#5D4037] uppercase tracking-[0.2em] py-4 border border-[#D7CCC8] rounded-[22px] bg-white/50 hover:bg-white transition-all active:scale-95 opacity-80"
             >
-              {isLinkingCloud ? (isSetup ? "Back to Local Setup" : "Back to Login") : "Connect to Cloud Account"}
+              Back
             </button>
           )}
         </div>
 
-        <button onClick={handleAction} disabled={loading}
-          className={`w-full mt-6 ${isRecovering || isLinkingCloud ? 'bg-[#5D4037]' : 'bg-gradient-to-r from-[#FF8A65] to-[#FFAB91]'} text-white font-bold text-lg py-5 rounded-[28px] hover:shadow-xl hover:shadow-orange-200/50 active:scale-95 transition-all flex items-center justify-center gap-3`}>
-          {loading ? "Processing..." : (isLinkingCloud ? "Connect Cloud" : isRecovering ? "Reset Password" : isSetup ? "Setup System" : (isCloudReady ? "Cloud Login" : "Sign In"))} {!loading && <ArrowRight size={20} />}
-        </button>
-
-        {!isSetup && !isLinkingCloud && !isRecovering && (
-          <button
-            onClick={() => {
-              if (confirm("⚠️ WARNING: This will DELETE all local data on this phone. Use this ONLY if you are locked out and want to start fresh or connect to a Cloud account. Continue?")) {
-                localStorage.clear();
-                window.location.reload();
-              }
-            }}
-            className="mt-8 text-[8px] font-bold text-red-300 uppercase tracking-widest hover:text-red-500 transition-colors opacity-50"
-          >
-            Emergency Reset (Wipe All Data)
-          </button>
+        {mode === 'login' && (
+          <div className="mt-8 w-full flex justify-center">
+            <button
+              onClick={() => {
+                if (confirm("⚠️ WARNING: This will DELETE all local data on this phone. Use this ONLY if you are locked out and want to start fresh or connect to a Cloud account. Continue?")) {
+                  localStorage.clear();
+                  window.location.reload();
+                }
+              }}
+              className="px-4 py-2 text-[8px] font-bold text-red-400/60 uppercase tracking-widest hover:text-red-500 hover:bg-red-50/50 rounded-full transition-all active:scale-95 border border-transparent hover:border-red-100"
+            >
+              Emergency Reset (Wipe All Data)
+            </button>
+          </div>
         )}
-
       </div>
     </div>
   );
 };
 
-const DashboardView = ({ db, setDb, selectedDate, setSelectedDate, onOpenReports }: { db: DatabaseState, setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, selectedDate: string, setSelectedDate: (d: string) => void, onOpenReports: () => void }) => {
+const DashboardView = ({ db, setDb, selectedDate, setSelectedDate, setActiveTab, setSelectedSalesmanId, onOpenReports }: { db: DatabaseState, setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, selectedDate: string, setSelectedDate: (d: string) => void, setActiveTab: (t: string) => void, setSelectedSalesmanId: (id: string) => void, onOpenReports: () => void }) => {
   const dailyDispatches = useMemo<DispatchRecord[]>(() => (db.dispatches as DispatchRecord[]).filter((d: DispatchRecord) => d.date === selectedDate), [db.dispatches, selectedDate]);
   const dailySettlements = useMemo<Settlement[]>(() => (db.settlements as Settlement[]).filter((s: Settlement) => s.date === selectedDate), [db.settlements, selectedDate]);
   const [expandedSalesman, setExpandedSalesman] = useState<string | null>(null);
@@ -579,6 +629,36 @@ const DashboardView = ({ db, setDb, selectedDate, setSelectedDate, onOpenReports
   }, [db.salesmen, uniqueSalesmanIdsDispatched]);
 
   const remainingCount = remainingSalesmen.length;
+
+  const pendingAllTime = useMemo(() => {
+    const pendingByDateSalesman: Record<string, { date: string, salesmanId: string, salesmanName: string, status: 'on_field' | 'returned', count: number }> = {};
+
+    (db.dispatches as DispatchRecord[]).forEach(d => {
+      const key = `${d.date}_${d.salesmanId}`;
+
+      // Check if already settled
+      const isSettled = (db.settlements as Settlement[]).some(s => s.date === d.date && s.salesmanId === d.salesmanId && s.settlementLocked);
+      if (isSettled) return;
+
+      if (!pendingByDateSalesman[key]) {
+        pendingByDateSalesman[key] = {
+          date: d.date,
+          salesmanId: d.salesmanId,
+          salesmanName: d.salesmanNameSnapshot,
+          status: d.returnedQuantity === null ? 'on_field' : 'returned',
+          count: 1
+        };
+      } else {
+        pendingByDateSalesman[key].count++;
+        // If any dispatch for this day has returns, mark as 'returned'
+        if (d.returnedQuantity !== null) {
+          pendingByDateSalesman[key].status = 'returned';
+        }
+      }
+    });
+
+    return Object.values(pendingByDateSalesman).sort((a, b) => b.date.localeCompare(a.date));
+  }, [db.dispatches, db.settlements]);
 
   const { totalSales, totalComm, netAmt } = useMemo(() => {
     return dailySettlements.reduce((acc, s: Settlement) => {
@@ -655,6 +735,46 @@ const DashboardView = ({ db, setDb, selectedDate, setSelectedDate, onOpenReports
           </div>
           <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-3xl -mr-10 -mt-10"></div>
         </div>
+
+        {pendingAllTime.length > 0 && (
+          <div className="w-full flex flex-col gap-4 mb-10">
+            <div className="flex justify-between items-center px-1">
+              <h3 className="text-[10px] font-black text-[#E87A5D] uppercase tracking-[0.2em]">⚠️ Overdue Settlements</h3>
+              <span className="bg-[#FFEBEE] text-[#D32F2F] text-[9px] font-black px-2 py-0.5 rounded-full border border-[#FFCDD2]">{pendingAllTime.length}</span>
+            </div>
+            <div className="flex overflow-x-auto no-scrollbar gap-4 pb-2 -mx-1 px-1">
+              {pendingAllTime.map((item, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => {
+                    setSelectedDate(item.date);
+                    setSelectedSalesmanId(item.salesmanId);
+                    setActiveTab(item.status === 'returned' ? 'settle' : 'returns');
+                  }}
+                  className="min-w-[140px] bg-white rounded-[24px] p-4 border border-white premium-shadow flex flex-col gap-2 active:scale-95 transition-all cursor-pointer"
+                >
+                  <div className="flex justify-between items-start">
+                    <div className={`h-8 w-8 rounded-xl flex items-center justify-center ${item.status === 'returned' ? 'bg-blue-50 text-blue-500' : 'bg-orange-50 text-orange-500'}`}>
+                      {item.status === 'returned' ? <CreditCard size={14} /> : <RotateCcw size={14} />}
+                    </div>
+                    <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded-full border ${item.status === 'returned' ? 'bg-blue-50 text-blue-500 border-blue-100' : 'bg-orange-50 text-orange-500 border-orange-100'}`}>
+                      {item.status === 'returned' ? 'Ready' : 'Field'}
+                    </span>
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-[#5D4037] text-[11px] leading-tight truncate">{item.salesmanName}</h4>
+                    <p className="text-[9px] font-bold text-[#A1887F] uppercase tracking-wider opacity-60 mt-0.5">
+                      {new Date(item.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })}
+                    </p>
+                  </div>
+                  <div className="mt-1 flex items-center gap-1 text-[8px] font-black text-[#5D4037]/40 uppercase">
+                    Take Action <ArrowRight size={8} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="w-full flex flex-col gap-4 mb-10">
           <h3 className="text-[10px] font-black text-[#A1887F] uppercase tracking-[0.2em] px-1 py-2">Field Activity</h3>
@@ -956,8 +1076,7 @@ const ReportsView = ({ db }: { db: DatabaseState }) => {
   );
 };
 
-const DispatchView = ({ db, setDb, selectedDate, setSelectedDate }: { db: DatabaseState, setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, selectedDate: string, setSelectedDate: (d: string) => void }) => {
-  const [sid, setSid] = useState<string>('');
+const DispatchView = ({ db, setDb, selectedDate, setSelectedDate, sid, setSid }: { db: DatabaseState, setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, selectedDate: string, setSelectedDate: (d: string) => void, sid: string, setSid: (s: string) => void }) => {
   const [quantities, setQuantities] = useState<Record<string, string>>({});
 
   const availableSalesmen = useMemo<Salesman[]>(() => {
@@ -1061,8 +1180,7 @@ const DispatchView = ({ db, setDb, selectedDate, setSelectedDate }: { db: Databa
   );
 };
 
-const ReturnsView = ({ db, setDb, selectedDate, setSelectedDate }: { db: DatabaseState, setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, selectedDate: string, setSelectedDate: (d: string) => void }) => {
-  const [sid, setSid] = useState<string>('');
+const ReturnsView = ({ db, setDb, selectedDate, setSelectedDate, sid, setSid }: { db: DatabaseState, setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, selectedDate: string, setSelectedDate: (d: string) => void, sid: string, setSid: (s: string) => void }) => {
   const dispatches = useMemo<DispatchRecord[]>(() => (db.dispatches as DispatchRecord[]).filter((d: DispatchRecord) => d.salesmanId === sid && d.date === selectedDate), [db.dispatches, sid, selectedDate]);
   const isSettled = useMemo<boolean>(() => (db.settlements as Settlement[]).some((s: Settlement) => s.salesmanId === sid && s.date === selectedDate && s.settlementLocked), [db.settlements, sid, selectedDate]);
 
@@ -1191,8 +1309,7 @@ const ReturnsView = ({ db, setDb, selectedDate, setSelectedDate }: { db: Databas
   );
 };
 
-const SettlementView = ({ db, setDb, selectedDate, setSelectedDate }: { db: DatabaseState, setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, selectedDate: string, setSelectedDate: (d: string) => void }) => {
-  const [sid, setSid] = useState<string>('');
+const SettlementView = ({ db, setDb, selectedDate, setSelectedDate, sid, setSid }: { db: DatabaseState, setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, selectedDate: string, setSelectedDate: (d: string) => void, sid: string, setSid: (s: string) => void }) => {
   const [comm, setComm] = useState(40);
   const [paidAmt, setPaidAmt] = useState('');
 
@@ -1514,7 +1631,7 @@ const LedgerView = ({ db, setDb }: { db: DatabaseState, setDb: (db: DatabaseStat
 
 // --- DRIVE SYNC LOGIC ---
 
-const FirebaseSyncPanel = ({ db, setDb }: { db: DatabaseState, setDb: (newDb: DatabaseState) => void }) => {
+const FirebaseSyncPanel = ({ db, setDb }: { db: DatabaseState, setDb: (newDb: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void }) => {
   const [syncStatus, setSyncStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [isLocked, setIsLocked] = useState(() => localStorage.getItem('firebase_config') !== null);
   const [isRecoveryLocked, setIsRecoveryLocked] = useState(() => db.recoveryHash !== null);
@@ -1616,56 +1733,23 @@ const FirebaseSyncPanel = ({ db, setDb }: { db: DatabaseState, setDb: (newDb: Da
           )}
         </div>
 
-        {isLocked ? (
-          <div className="flex flex-col gap-4">
-            <div className="bg-[#FFFBF7] p-4 rounded-2xl border border-[#FFF1E0] shadow-inner">
-              <div className="flex flex-col gap-2">
-                <div className="flex justify-between items-center text-[9px] font-bold text-[#A1887F] uppercase tracking-wider">
-                  <span>Project ID</span>
-                  <span className="text-[#5D4037]">{config.projectId || 'Not set'}</span>
-                </div>
-                <div className="flex justify-between items-center text-[9px] font-bold text-[#A1887F] uppercase tracking-wider">
-                  <span>API Key</span>
-                  <span className="text-[#5D4037] opacity-60">••••••••••••••••</span>
-                </div>
+        <div className="flex flex-col gap-4">
+          <div className="bg-[#FFFBF7] p-4 rounded-2xl border border-[#FFF1E0] shadow-inner">
+            <div className="flex flex-col gap-2">
+              <div className="flex justify-between items-center text-[9px] font-bold text-[#A1887F] uppercase tracking-wider">
+                <span>Database Link</span>
+                <span className="text-[#5D4037]">Sonu Ice Cream Cloud</span>
+              </div>
+              <div className="flex justify-between items-center text-[9px] font-bold text-[#A1887F] uppercase tracking-wider mt-2">
+                <span>Security</span>
+                <span className="text-[#4CAF50] font-black">HARDCODED SECURELY</span>
               </div>
             </div>
-            <button
-              onClick={() => setIsLocked(false)}
-              className="w-full bg-[#F9F5F0] text-[#8D6E63] py-3 rounded-[16px] font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 border border-white premium-shadow transition-all active:scale-95"
-            >
-              Update Configuration
-            </button>
           </div>
-        ) : (
-          <>
-            <p className="text-[10px] text-[#A1887F] font-medium mb-4 uppercase tracking-widest leading-relaxed">
-              Enter your <span className="text-[#D32F2F]">Firebase Web Config</span> to enable cloud sync.
-            </p>
-            <div className="flex flex-col gap-3">
-              <textarea
-                placeholder='{ "apiKey": "...", "projectId": "...", ... }'
-                value={typeof config === 'string' ? config : JSON.stringify(config, null, 2)}
-                onChange={(e) => {
-                  try {
-                    const parsed = JSON.parse(e.target.value);
-                    setConfig(parsed);
-                  } catch {
-                    setConfig(e.target.value as any);
-                  }
-                }}
-                rows={5}
-                className="w-full bg-[#FFFBF7] border border-[#FFF1E0] rounded-[16px] px-4 py-4 font-mono text-[10px] text-[#5D4037] outline-none focus:ring-1 focus:ring-[#FFCCBC]"
-              />
-              <button
-                onClick={saveConfig}
-                className="w-full bg-[#5D4037] text-white py-3 rounded-[16px] font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 active:scale-95 transition-all"
-              >
-                <ShieldCheck size={16} /> Save & Lock Config
-              </button>
-            </div>
-          </>
-        )}
+          <div className="text-center text-[8px] font-bold text-[#A1887F] uppercase tracking-widest opacity-60 mt-2">
+            Configuration cannot be changed here.
+          </div>
+        </div>
       </div>
 
       {/* Security & Recovery */}
@@ -1776,6 +1860,7 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
   const [activeTab, setActiveTab] = useState<'products' | 'salesmen' | 'cloud'>('products');
   const [newName, setNewName] = useState('');
   const [newPrice, setNewPrice] = useState('');
+  const [newPhone, setNewPhone] = useState('');
 
   const handleAdd = () => {
     if (!newName) return;
@@ -1787,7 +1872,17 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
         lastUpdated: new Date().toISOString()
       }));
     } else {
-      const s: Salesman = { id: crypto.randomUUID(), name: newName, isActive: true, createdAt: Date.now() };
+      if (newPhone && !/^\d{10}$/.test(newPhone)) {
+        alert("Phone number must be exactly 10 digits.");
+        return;
+      }
+      const s: Salesman = { 
+        id: crypto.randomUUID(), 
+        name: newName, 
+        ...(newPhone && { phone: newPhone }),
+        isActive: true, 
+        createdAt: Date.now() 
+      };
       setDb((prev: DatabaseState) => ({
         ...prev,
         salesmen: [...prev.salesmen, s],
@@ -1796,6 +1891,20 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
     }
     setNewName('');
     setNewPrice('');
+    setNewPhone('');
+  };
+
+  const handleUpdatePhone = (id: string) => {
+    const phone = prompt("Enter 10-digit Indian phone number (or leave empty to remove):");
+    if (phone === null) return;
+    if (phone && !/^\d{10}$/.test(phone)) {
+      alert("Phone number must be exactly 10 digits.");
+      return;
+    }
+    setDb((prev: DatabaseState) => {
+      const nextSalesmen = (prev.salesmen as Salesman[]).map((s: Salesman) => s.id === id ? { ...s, phone: phone || undefined } : s);
+      return { ...prev, salesmen: nextSalesmen, lastUpdated: new Date().toISOString() };
+    });
   };
 
   const handleDeleteEntry = (id: string, name: string) => {
@@ -1861,8 +1970,11 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
             <div className="flex flex-col gap-4">
               <input type="text" placeholder={activeTab === 'products' ? "Flavor Name" : "Salesman Name"} value={newName} onChange={(e) => setNewName(e.target.value)}
                 className="w-full bg-[#FFFBF7] border border-[#FFF1E0] rounded-[20px] px-5 py-4 font-bold text-[#5D4037] outline-none focus:ring-1 focus:ring-[#FFCCBC]" />
-              {activeTab === 'products' && (
+              {activeTab === 'products' ? (
                 <input type="number" placeholder="Rate (₹)" value={newPrice} onChange={(e) => setNewPrice(e.target.value)}
+                  className="w-full bg-[#FFFBF7] border border-[#FFF1E0] rounded-[20px] px-5 py-4 font-bold text-[#5D4037] outline-none focus:ring-1 focus:ring-[#FFCCBC]" />
+              ) : (
+                <input type="tel" placeholder="Phone Number (10 digits) - Optional" value={newPhone} onChange={(e) => setNewPhone(e.target.value)}
                   className="w-full bg-[#FFFBF7] border border-[#FFF1E0] rounded-[20px] px-5 py-4 font-bold text-[#5D4037] outline-none focus:ring-1 focus:ring-[#FFCCBC]" />
               )}
               <button onClick={handleAdd} className="w-full bg-[#5D4037] text-white font-black py-4 rounded-[20px] flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-all mt-2">
@@ -1894,6 +2006,20 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
                         </button>
                       </div>
                       {activeTab === 'products' && <div className="text-[8px] font-black text-[#FF8A65] uppercase tracking-widest opacity-70">Rate: ₹{(item as Product).currentPrice}</div>}
+                      {activeTab === 'salesmen' && (
+                        <div className="flex items-center gap-2 mt-1">
+                          {(item as Salesman).phone ? (
+                            <>
+                              <a href={`tel:+91${(item as Salesman).phone}`} className="bg-[#4CAF50] text-white text-[9px] font-bold px-3 py-1 rounded-full flex items-center gap-1 shadow-sm active:scale-95" onClick={e => e.stopPropagation()}>
+                                📞 Call
+                              </a>
+                              <button onClick={(e) => { e.stopPropagation(); handleUpdatePhone(item.id); }} className="text-[9px] text-[#A1887F] font-bold underline">Edit Phone</button>
+                            </>
+                          ) : (
+                            <button onClick={(e) => { e.stopPropagation(); handleUpdatePhone(item.id); }} className="text-[9px] text-[#FF8A65] font-bold underline">Add Phone Number</button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

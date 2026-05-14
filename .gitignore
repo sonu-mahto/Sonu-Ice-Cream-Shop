@@ -23,3 +23,7 @@ android/build/
 
 # Capacitor auto-generated
 android/app/src/main/assets/public/
+
+# Binary builds
+*.apk
+

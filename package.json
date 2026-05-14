@@ -13,6 +13,7 @@
     "@capacitor/cli": "^8.1.0",
     "@capacitor/core": "^8.1.0",
     "@capacitor/share": "^8.0.1",
+    "@capgo/capacitor-updater": "^8.45.11",
     "@tailwindcss/vite": "^4.1.18",
     "firebase": "^12.9.0",
     "lucide-react": "^0.564.0",

@@ -9,6 +9,7 @@ export interface Product {
 export interface Salesman {
   id: string;
   name: string;
+  phone?: string;
   isActive: boolean;
   createdAt: number;
 }
