@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { doc, getDoc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, collection, getDocs } from 'firebase/firestore';
 import { db as firestore } from './firebase';
 import { Share } from '@capacitor/share';
 import {
@@ -40,9 +40,8 @@ import {
   Eye,
   EyeOff
 } from 'lucide-react';
-import { loadDB, saveDB, hashPassword } from './db';
+import { loadDB, saveDB, hashPassword, generateUUID } from './db';
 import { Product, Salesman, DispatchRecord, Settlement, PaymentRecord, DatabaseState } from './types';
-import { CapacitorUpdater } from '@capgo/capacitor-updater';
 
 const FIREBASE_COLLECTION = 'ice_cream_shops';
 
@@ -179,15 +178,12 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState(getLocalDateString());
   const [selectedSalesmanId, setSelectedSalesmanId] = useState('');
   const [loading, setLoading] = useState(false);
+  const lastSyncedDbRef = useRef<DatabaseState | null>(loadDB());
 
   useEffect(() => {
     const saved = localStorage.getItem('sonu_session');
     if (saved) setSession(JSON.parse(saved));
 
-    // Notify Capacitor Updater that the app has successfully launched
-    CapacitorUpdater.notifyAppReady().catch((err: any) => {
-      console.warn('CapacitorUpdater notifyAppReady failed (likely web environment):', err);
-    });
   }, []);
 
   // Background cleanup effect removed to preserve user production data
@@ -199,7 +195,7 @@ export default function App() {
       console.log("Setting up real-time listener for:", username);
       const docRef = doc(firestore, FIREBASE_COLLECTION, `${username}_data`);
 
-      const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      const unsubscribe = onSnapshot(docRef, async (docSnap) => {
         if (docSnap.exists()) {
           const cloudData = docSnap.data() as DatabaseState;
 
@@ -209,7 +205,31 @@ export default function App() {
 
           if (cloudTime > localTime) {
             console.log("Cloud data is newer, updating local state...");
-            setDb(cloudData);
+            try {
+              const monthlySnap = await getDocs(collection(firestore!, FIREBASE_COLLECTION, `${username}_data`, "monthly_data"));
+              const mergedDb: DatabaseState = {
+                ...cloudData,
+                dispatches: [],
+                settlements: [],
+                paymentLedger: []
+              };
+              if (monthlySnap.empty) {
+                mergedDb.dispatches = cloudData.dispatches || [];
+                mergedDb.settlements = cloudData.settlements || [];
+                mergedDb.paymentLedger = cloudData.paymentLedger || [];
+              } else {
+                monthlySnap.forEach((doc) => {
+                  const data = doc.data();
+                  if (data.dispatches) mergedDb.dispatches.push(...data.dispatches);
+                  if (data.settlements) mergedDb.settlements.push(...data.settlements);
+                  if (data.paymentLedger) mergedDb.paymentLedger.push(...data.paymentLedger);
+                });
+              }
+              setDb(mergedDb);
+              lastSyncedDbRef.current = mergedDb;
+            } catch (err) {
+              console.error("Failed to pull monthly partitioned data during sync:", err);
+            }
           } else {
             console.log("Local data is up to date or cloud data is older.");
           }
@@ -225,15 +245,91 @@ export default function App() {
   useEffect(() => {
     saveDB(db);
 
-    // Auto-sync with Firebase if enabled and correctly configured
-    if (db.autoSyncEnabled && firestore && session.isLoggedIn && db.ownerUsername) {
+    // Auto-sync with Firebase if logged in and correctly configured
+    if (firestore && session.isLoggedIn && db.ownerUsername) {
       const timeoutId = setTimeout(async () => {
         try {
-          const docRef = doc(firestore, FIREBASE_COLLECTION, `${db.ownerUsername}_data`);
-          await setDoc(docRef, {
-            ...db,
-            lastFirebaseSync: Date.now()
-          }, { merge: true });
+          const docRef = doc(firestore!, FIREBASE_COLLECTION, `${db.ownerUsername}_data`);
+
+          // Group by month
+          const group: Record<string, { dispatches: any[], settlements: any[], paymentLedger: any[] }> = {};
+          const getMonth = (dateStr: string) => dateStr.slice(0, 7);
+
+          db.dispatches.forEach(d => {
+            const m = getMonth(d.date);
+            if (!group[m]) group[m] = { dispatches: [], settlements: [], paymentLedger: [] };
+            group[m].dispatches.push(d);
+          });
+          db.settlements.forEach(s => {
+            const m = getMonth(s.date);
+            if (!group[m]) group[m] = { dispatches: [], settlements: [], paymentLedger: [] };
+            group[m].settlements.push(s);
+          });
+          db.paymentLedger.forEach(p => {
+            const m = getMonth(p.date);
+            if (!group[m]) group[m] = { dispatches: [], settlements: [], paymentLedger: [] };
+            group[m].paymentLedger.push(p);
+          });
+
+          // Determine modified months compared to lastSyncedDbRef
+          const modified = new Set<string>();
+          const last = lastSyncedDbRef.current;
+          if (!last) {
+            Object.keys(group).forEach(m => modified.add(m));
+          } else {
+            const lastGroup: Record<string, { dispatches: any[], settlements: any[], paymentLedger: any[] }> = {};
+            last.dispatches.forEach(x => {
+              const m = getMonth(x.date);
+              if (!lastGroup[m]) lastGroup[m] = { dispatches: [], settlements: [], paymentLedger: [] };
+              lastGroup[m].dispatches.push(x);
+            });
+            last.settlements.forEach(x => {
+              const m = getMonth(x.date);
+              if (!lastGroup[m]) lastGroup[m] = { dispatches: [], settlements: [], paymentLedger: [] };
+              lastGroup[m].settlements.push(x);
+            });
+            last.paymentLedger.forEach(x => {
+              const m = getMonth(x.date);
+              if (!lastGroup[m]) lastGroup[m] = { dispatches: [], settlements: [], paymentLedger: [] };
+              lastGroup[m].paymentLedger.push(x);
+            });
+
+            const allMonths = new Set([...Object.keys(group), ...Object.keys(lastGroup)]);
+            allMonths.forEach(m => {
+              const curr = group[m] || { dispatches: [], settlements: [], paymentLedger: [] };
+              const lst = lastGroup[m] || { dispatches: [], settlements: [], paymentLedger: [] };
+
+              if (JSON.stringify(curr.dispatches) !== JSON.stringify(lst.dispatches) ||
+                  JSON.stringify(curr.settlements) !== JSON.stringify(lst.settlements) ||
+                  JSON.stringify(curr.paymentLedger) !== JSON.stringify(lst.paymentLedger)) {
+                modified.add(m);
+              }
+            });
+          }
+
+          if (modified.size > 0) {
+            console.log("Auto-sync: modified months detected:", Array.from(modified));
+            // 1. Write the monthly documents first
+            const monthPromises = Array.from(modified).map(m => {
+              const monthDocRef = doc(firestore!, FIREBASE_COLLECTION, `${db.ownerUsername}_data`, "monthly_data", m);
+              return setDoc(monthDocRef, group[m] || { dispatches: [], settlements: [], paymentLedger: [] });
+            });
+            await Promise.all(monthPromises);
+          }
+
+          // 2. Write the metadata document last to update lastFirebaseSync and trigger listener
+          const metaDoc = {
+            products: db.products,
+            salesmen: db.salesmen,
+            ownerUsername: db.ownerUsername,
+            ownerHash: db.ownerHash,
+            recoveryHash: db.recoveryHash,
+            lastFirebaseSync: Date.now(),
+            lastUpdated: db.lastUpdated || new Date().toISOString()
+          };
+          await setDoc(docRef, metaDoc);
+          
+          lastSyncedDbRef.current = db;
           console.log("Auto-sync successful");
         } catch (err) {
           console.error("Auto-sync failed:", err);
@@ -257,18 +353,39 @@ export default function App() {
       if (firestore) {
         try {
           const docRef = doc(firestore, FIREBASE_COLLECTION, `${username}_data`);
-          // Cloud check with 10s timeout
+          // Cloud check with 20s timeout to allow cold-start connections
           const docSnap = await withTimeout(
             getDoc(docRef),
-            10000,
-            "Cloud connection timed out. Trying local login..."
+            20000,
+            "Cloud connection timed out. Please check your internet connection and try again."
           );
 
           if (docSnap.exists()) {
             const cloudData = docSnap.data() as DatabaseState;
             if (cloudData.ownerHash === hash) {
-              // Success! Load cloud data
-              setDb(cloudData);
+              // Success! Load cloud data and all monthly documents
+              const monthlySnap = await getDocs(collection(firestore, FIREBASE_COLLECTION, `${username}_data`, "monthly_data"));
+              const mergedDb: DatabaseState = {
+                ...cloudData,
+                dispatches: [],
+                settlements: [],
+                paymentLedger: []
+              };
+              if (monthlySnap.empty) {
+                mergedDb.dispatches = cloudData.dispatches || [];
+                mergedDb.settlements = cloudData.settlements || [];
+                mergedDb.paymentLedger = cloudData.paymentLedger || [];
+              } else {
+                monthlySnap.forEach((doc) => {
+                  const data = doc.data();
+                  if (data.dispatches) mergedDb.dispatches.push(...data.dispatches);
+                  if (data.settlements) mergedDb.settlements.push(...data.settlements);
+                  if (data.paymentLedger) mergedDb.paymentLedger.push(...data.paymentLedger);
+                });
+              }
+
+              setDb(mergedDb);
+              lastSyncedDbRef.current = mergedDb;
               const newSession = { isLoggedIn: true, ownerUsername: username };
               setSession(newSession);
               localStorage.setItem('sonu_session', JSON.stringify(newSession));
@@ -279,8 +396,13 @@ export default function App() {
             }
           }
         } catch (cloudErr) {
-          console.error("Cloud check failed, falling back to local:", cloudErr);
-          // Continue to local check
+          console.error("Cloud check failed:", cloudErr);
+          if (db.ownerHash === null) {
+            const msg = cloudErr instanceof Error ? cloudErr.message : String(cloudErr);
+            alert(`Cloud login failed: ${msg}\n\nPlease check your network connection and try again.`);
+            return;
+          }
+          // Continue to local check if a local account already exists
         }
       }
 
@@ -327,7 +449,8 @@ export default function App() {
       alert("Invalid Username or Password (Local Check)");
     } catch (err) {
       console.error("Login Error:", err);
-      alert("An error occurred during login. Please check your connection.");
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`An error occurred during login: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -409,7 +532,7 @@ export default function App() {
       case 'settle': return <SettlementView db={db} setDb={setDb} selectedDate={selectedDate} setSelectedDate={setSelectedDate} sid={selectedSalesmanId} setSid={setSelectedSalesmanId} />;
       case 'ledger': return <LedgerView db={db} setDb={setDb} />;
       case 'reports': return <ReportsView db={db} />;
-      case 'manage': return <ManageView db={db} setDb={setDb} onLogout={handleLogout} />;
+      case 'manage': return <ManageView db={db} setDb={setDb} onLogout={handleLogout} lastSyncedDbRef={lastSyncedDbRef} />;
       default: return null;
     }
   };
@@ -797,44 +920,49 @@ const DashboardView = ({ db, setDb, selectedDate, setSelectedDate, setActiveTab,
                   <div key={sid} className="bg-white rounded-[32px] border border-white overflow-hidden transition-all premium-shadow">
                     <div
                       onClick={() => setExpandedSalesman(isExpanded ? null : sid)}
-                      className="p-4 flex items-center justify-between cursor-pointer active:bg-[#FFFBF7] transition-colors"
+                      className="p-4 flex items-center justify-between gap-3 cursor-pointer active:bg-[#FFFBF7] transition-colors"
                     >
-                      <div className="flex items-center gap-4">
-                        <div className={`h-12 w-12 rounded-[22px] flex items-center justify-center font-brand text-lg ${isSettled ? 'bg-[#E8F5EE] text-[#5DBF8A]' : 'bg-[#FFF4E6] text-[#E87A5D]'}`}>
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <div className={`h-12 w-12 rounded-[20px] shrink-0 flex items-center justify-center font-bold text-lg ${isSettled ? 'bg-[#E8F5EE] text-[#5DBF8A]' : 'bg-[#FFF4E6] text-[#E87A5D]'}`}>
                           {sm?.name?.[0].toUpperCase() || "S"}
                         </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-[#5D4037] text-base leading-none">{sm?.name || "Unknown"}</span>
-                            {!isSettled && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteSalesmanActivity(sid);
-                                }}
-                                className="p-1.5 text-red-500 hover:text-red-700 transition-colors"
-                                title="Delete all dispatches for today"
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            )}
-                            {isSettled ? (
-                              <span className="bg-[#EFFFF0] text-[#4CAF50] text-[7px] font-black uppercase px-2 py-0.5 rounded-full border border-[#C8E6C9]">Settled</span>
-                            ) : hasReturns ? (
-                              <span className="bg-[#E3F2FD] text-[#1E88E5] text-[7px] font-black uppercase px-2 py-0.5 rounded-full border border-[#BBDEFB]">Returned</span>
-                            ) : (
-                              <span className="bg-[#FFF3E0] text-[#FF9800] text-[7px] font-black uppercase px-2 py-0.5 rounded-full border border-[#FFE0B2]">On Field</span>
-                            )}
+                        <div className="flex-1 min-w-0 pr-1">
+                          <div className="font-bold text-[#5D4037] text-base leading-tight truncate block">
+                            {sm?.name || "Unknown"}
                           </div>
-                          <div className="flex items-center gap-1 mt-1">
-                            <p className="text-[9px] font-bold text-[#A1887F] uppercase tracking-wider opacity-60">₹{vSales.toLocaleString('en-IN')}</p>
-                            {isExpanded ? <ChevronUp size={10} className="text-[#D7CCC8]" /> : <ChevronDown size={10} className="text-[#D7CCC8]" />}
+                          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                            {isSettled ? (
+                              <span className="shrink-0 bg-[#EFFFF0] text-[#4CAF50] text-[7px] font-black uppercase px-2 py-0.5 rounded-full border border-[#C8E6C9] flex items-center leading-none">Settled</span>
+                            ) : hasReturns ? (
+                              <span className="shrink-0 bg-[#E3F2FD] text-[#1E88E5] text-[7px] font-black uppercase px-2 py-0.5 rounded-full border border-[#BBDEFB] flex items-center leading-none">Returned</span>
+                            ) : (
+                              <span className="shrink-0 bg-[#FFF3E0] text-[#FF9800] text-[7px] font-black uppercase px-2 py-0.5 rounded-full border border-[#FFE0B2] flex items-center leading-none">On Field</span>
+                            )}
+                            <div className="flex items-center gap-1 shrink-0">
+                              <p className="text-[9px] font-bold text-[#A1887F] uppercase tracking-wider opacity-70 leading-none">₹{vSales.toLocaleString('en-IN')}</p>
+                              {isExpanded ? <ChevronUp size={10} className="text-[#D7CCC8]" /> : <ChevronDown size={10} className="text-[#D7CCC8]" />}
+                            </div>
                           </div>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="font-black text-[#5D4037] text-lg tabular-nums">{vDispatches.length}</div>
-                        <div className="text-[8px] text-[#A1887F] font-bold uppercase tracking-tighter opacity-50">Items</div>
+
+                      <div className="flex items-center gap-2 shrink-0 self-center">
+                        {!isSettled && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteSalesmanActivity(sid);
+                            }}
+                            className="p-2 text-red-500 hover:text-red-700 rounded-xl hover:bg-red-50 transition-colors shrink-0 self-center shadow-none block"
+                            title="Delete all dispatches for today"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                        <div className="text-right shrink-0 border-l border-[#FFF1E0] pl-3 py-1">
+                          <div className="font-black text-[#5D4037] text-lg tabular-nums leading-none">{vDispatches.length}</div>
+                          <div className="text-[8px] text-[#A1887F] font-bold uppercase tracking-tighter opacity-50 mt-1">Items</div>
+                        </div>
                       </div>
                     </div>
 
@@ -897,18 +1025,59 @@ const DashboardView = ({ db, setDb, selectedDate, setSelectedDate, setActiveTab,
 
                                   message += `--- *Final Summary* ---\n💰 Total Sales: ₹${isSettled.totalAmount.toLocaleString('en-IN')}\n🎁 Commission: ₹${isSettled.commissionAmount.toLocaleString('en-IN')}\n✅ *Daily Net: ₹${isSettled.netAmount.toLocaleString('en-IN')}*\n\nThank you! ✨`;
 
-                                  try {
-                                    // Use Capacitor Share for native APK reliability
-                                    await Share.share({
-                                      title: 'Sonu Ice Cream - Settlement',
-                                      text: message,
-                                      dialogTitle: 'Share Settlement Report'
-                                    });
-                                  } catch (err) {
-                                    console.log("Share failed or cancelled, using fallback", err);
-                                    // Fallback: Copy to clipboard
-                                    await navigator.clipboard.writeText(message);
-                                    alert("Report copied to clipboard! You can now paste it in WhatsApp.");
+                                  // Ensure we reliably write to clipboard as an immediate safety baseline
+                                  navigator.clipboard.writeText(message).catch(() => {});
+
+                                  let cleanPhone = sm?.phone ? sm.phone.replace(/\D/g, '') : '';
+                                  if (cleanPhone.length === 12 && cleanPhone.startsWith('91')) {
+                                    cleanPhone = cleanPhone.substring(2);
+                                  } else if (cleanPhone.length === 11 && cleanPhone.startsWith('0')) {
+                                    cleanPhone = cleanPhone.substring(1);
+                                  }
+
+                                  const isValidPhone = cleanPhone.length === 10 && /^[6789]\d{9}$/.test(cleanPhone);
+
+                                  if (isValidPhone) {
+                                    let hasNavigated = false;
+                                    const onBlurOrHidden = () => {
+                                      hasNavigated = true;
+                                    };
+
+                                    window.addEventListener('blur', onBlurOrHidden, { once: true });
+                                    document.addEventListener('visibilitychange', () => {
+                                      if (document.hidden) {
+                                        hasNavigated = true;
+                                      }
+                                    }, { once: true });
+
+                                    // Launch WhatsApp native app directly to the pre-filled chat
+                                    window.location.href = `whatsapp://send?phone=91${cleanPhone}&text=${encodeURIComponent(message)}`;
+
+                                    // Give ample time (2500ms) for the intent launch before deciding it failed
+                                    setTimeout(async () => {
+                                      window.removeEventListener('blur', onBlurOrHidden);
+                                      if (!hasNavigated && !document.hidden) {
+                                        try {
+                                          await Share.share({
+                                            title: 'Sonu Ice Cream - Settlement',
+                                            text: message,
+                                            dialogTitle: 'Share Settlement Report'
+                                          });
+                                        } catch (err) {
+                                          console.error("Share fallback error", err);
+                                        }
+                                      }
+                                    }, 2500);
+                                  } else {
+                                    try {
+                                      await Share.share({
+                                        title: 'Sonu Ice Cream - Settlement',
+                                        text: message,
+                                        dialogTitle: 'Share Settlement Report'
+                                      });
+                                    } catch (err) {
+                                      alert("Report copied to clipboard! You can now paste it manually.");
+                                    }
                                   }
                                 }}
                                 className="w-full bg-[#5D4037] text-white font-black text-[10px] uppercase tracking-[0.2em] py-4 rounded-[20px] shadow-lg shadow-[#5D4037]/20 flex items-center justify-center gap-3 active:scale-95 transition-all"
@@ -1104,7 +1273,7 @@ const DispatchView = ({ db, setDb, selectedDate, setSelectedDate, sid, setSid }:
       const p = (db.products as Product[]).find((prod: Product) => prod.id === pId)!;
       const numQty = parseInt(qty);
       return {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         date: selectedDate,
         salesmanId: sid,
         salesmanNameSnapshot: salesman.name,
@@ -1317,6 +1486,14 @@ const SettlementView = ({ db, setDb, selectedDate, setSelectedDate, sid, setSid 
   const existingSettlement = useMemo<Settlement | undefined>(() => (db.settlements as Settlement[]).find((s: Settlement) => s.salesmanId === sid && s.date === selectedDate), [db.settlements, sid, selectedDate]);
   const existingPayment = useMemo<PaymentRecord | undefined>(() => (db.paymentLedger as PaymentRecord[]).find((p: PaymentRecord) => p.salesmanId === sid && p.date === selectedDate), [db.paymentLedger, sid, selectedDate]);
 
+  useEffect(() => {
+    if (existingSettlement) {
+      setComm(existingSettlement.commissionPercent);
+    } else {
+      setComm(40);
+    }
+  }, [existingSettlement, sid, selectedDate]);
+
   const uniqueSalesmanIdsForDate = useMemo<string[]>(() => {
     const ids = (db.dispatches as DispatchRecord[])
       .filter((d: DispatchRecord) => d.date === selectedDate)
@@ -1331,15 +1508,20 @@ const SettlementView = ({ db, setDb, selectedDate, setSelectedDate, sid, setSid 
     }, 0);
   }, [dispatches]);
 
-  const commissionAmount = (totalSales * comm) / 100;
-  const netAmount = totalSales - commissionAmount;
+  const commissionAmount = existingSettlement?.settlementLocked 
+    ? existingSettlement.commissionAmount 
+    : (totalSales * comm) / 100;
+
+  const netAmount = existingSettlement?.settlementLocked 
+    ? existingSettlement.netAmount 
+    : totalSales - commissionAmount;
 
   const handleSettle = () => {
     if (!sid) return;
     if (existingSettlement?.settlementLocked) return;
     const salesman = (db.salesmen as Salesman[]).find((s: Salesman) => s.id === sid)!;
     const settlement: Settlement = {
-      id: existingSettlement?.id || crypto.randomUUID(),
+      id: existingSettlement?.id || generateUUID(),
       date: selectedDate,
       salesmanId: sid,
       salesmanNameSnapshot: salesman.name,
@@ -1367,7 +1549,7 @@ const SettlementView = ({ db, setDb, selectedDate, setSelectedDate, sid, setSid 
     if (isNaN(amount)) return;
 
     const newPayment: PaymentRecord = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       date: selectedDate,
       salesmanId: sid,
       amountPaid: amount,
@@ -1432,7 +1614,7 @@ const SettlementView = ({ db, setDb, selectedDate, setSelectedDate, sid, setSid 
           )}
 
           <div className="flex flex-col gap-4 bg-[#FFFBF7] p-6 rounded-[32px] border border-[#FFF1E0] shadow-inner">
-            <div className="flex justify-between items-center"><span className="text-[10px] text-[#A1887F] font-bold uppercase tracking-widest opacity-60">Payout Amt</span><span className="text-[#EF5350] font-black tabular-nums">- ₹{commissionAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span></div>
+            <div className="flex justify-between items-center"><span className="text-[10px] text-[#A1887F] font-bold uppercase tracking-widest opacity-60">Payout Amt {existingSettlement?.settlementLocked ? `(${existingSettlement.commissionPercent}%)` : `(${comm}%)`}</span><span className="text-[#EF5350] font-black tabular-nums">- ₹{commissionAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span></div>
             <div className="flex justify-between items-center border-t border-[#FFF1E0] pt-4"><span className="text-[#5D4037] font-black text-lg leading-none">Net Store</span><span className="text-[#43A047] font-brand text-2xl tracking-widest leading-none">₹{netAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span></div>
           </div>
 
@@ -1631,8 +1813,13 @@ const LedgerView = ({ db, setDb }: { db: DatabaseState, setDb: (db: DatabaseStat
 
 // --- DRIVE SYNC LOGIC ---
 
-const FirebaseSyncPanel = ({ db, setDb }: { db: DatabaseState, setDb: (newDb: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void }) => {
+const FirebaseSyncPanel = ({ db, setDb, lastSyncedDbRef }: { 
+  db: DatabaseState, 
+  setDb: (newDb: DatabaseState) => void, 
+  lastSyncedDbRef: React.MutableRefObject<DatabaseState | null> 
+}) => {
   const [syncStatus, setSyncStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [lastError, setLastError] = useState<string | null>(null);
   const [isLocked, setIsLocked] = useState(() => localStorage.getItem('firebase_config') !== null);
   const [isRecoveryLocked, setIsRecoveryLocked] = useState(() => db.recoveryHash !== null);
   const [recoveryInput, setRecoveryInput] = useState('');
@@ -1671,20 +1858,59 @@ const FirebaseSyncPanel = ({ db, setDb }: { db: DatabaseState, setDb: (newDb: Da
     if (!db.ownerUsername) return alert("Please login first.");
     setSyncStatus('loading');
     try {
-      const docRef = doc(firestore, FIREBASE_COLLECTION, `${db.ownerUsername}_data`);
+      const docRef = doc(firestore!, FIREBASE_COLLECTION, `${db.ownerUsername}_data`);
       const now = new Date().toISOString();
+
+      // Group dispatches, settlements, and payments by month
+      const group: Record<string, { dispatches: any[], settlements: any[], paymentLedger: any[] }> = {};
+      const getMonth = (dateStr: string) => dateStr.slice(0, 7);
+
+      db.dispatches.forEach(d => {
+        const m = getMonth(d.date);
+        if (!group[m]) group[m] = { dispatches: [], settlements: [], paymentLedger: [] };
+        group[m].dispatches.push(d);
+      });
+      db.settlements.forEach(s => {
+        const m = getMonth(s.date);
+        if (!group[m]) group[m] = { dispatches: [], settlements: [], paymentLedger: [] };
+        group[m].settlements.push(s);
+      });
+      db.paymentLedger.forEach(p => {
+        const m = getMonth(p.date);
+        if (!group[m]) group[m] = { dispatches: [], settlements: [], paymentLedger: [] };
+        group[m].paymentLedger.push(p);
+      });
+
+      // 1. Write the monthly documents first
+      const monthPromises = Object.keys(group).map(m => {
+        const monthDocRef = doc(firestore!, FIREBASE_COLLECTION, `${db.ownerUsername}_data`, "monthly_data", m);
+        return setDoc(monthDocRef, group[m]);
+      });
+      await Promise.all(monthPromises);
+
+      // 2. Write the metadata document last
       await setDoc(docRef, {
-        ...db,
+        products: db.products,
+        salesmen: db.salesmen,
+        ownerUsername: db.ownerUsername,
+        ownerHash: db.ownerHash,
+        recoveryHash: db.recoveryHash,
         lastFirebaseSync: Date.now(),
         lastUpdated: now
       });
-      setDb({ ...db, lastFirebaseSync: Date.now(), lastUpdated: now });
+
+      const updatedDb = { ...db, lastFirebaseSync: Date.now(), lastUpdated: now };
+      setDb(updatedDb);
+      lastSyncedDbRef.current = updatedDb;
       setSyncStatus('success');
+      setLastError(null);
       alert("Cloud Backup Successful!");
     } catch (err) {
       console.error("Firebase Error:", err);
       setSyncStatus('error');
-      alert("Backup failed. Check your Firebase config and connection.");
+      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      setLastError(msg);
+      alert(`Backup failed. Check your Firebase config and connection.\n\nError details:\n${msg}`);
     }
   };
 
@@ -1692,14 +1918,39 @@ const FirebaseSyncPanel = ({ db, setDb }: { db: DatabaseState, setDb: (newDb: Da
     if (!db.ownerUsername) return alert("Please login first.");
     setSyncStatus('loading');
     try {
-      const docRef = doc(firestore, FIREBASE_COLLECTION, `${db.ownerUsername}_data`);
+      const docRef = doc(firestore!, FIREBASE_COLLECTION, `${db.ownerUsername}_data`);
       const docSnap = await getDoc(docRef);
 
       if (docSnap.exists()) {
-        const cloudDb = docSnap.data() as any;
+        const cloudData = docSnap.data() as DatabaseState;
         if (confirm("Restore cloud data? This will overwrite your local records.")) {
-          setDb({ ...cloudDb, lastFirebaseSync: Date.now() });
+          
+          // Fetch the monthly partitioned data
+          const monthlySnap = await getDocs(collection(firestore!, FIREBASE_COLLECTION, `${db.ownerUsername}_data`, "monthly_data"));
+          const mergedDb: DatabaseState = {
+            ...cloudData,
+            dispatches: [],
+            settlements: [],
+            paymentLedger: []
+          };
+          if (monthlySnap.empty) {
+            mergedDb.dispatches = cloudData.dispatches || [];
+            mergedDb.settlements = cloudData.settlements || [];
+            mergedDb.paymentLedger = cloudData.paymentLedger || [];
+          } else {
+            monthlySnap.forEach((doc) => {
+              const data = doc.data();
+              if (data.dispatches) mergedDb.dispatches.push(...data.dispatches);
+              if (data.settlements) mergedDb.settlements.push(...data.settlements);
+              if (data.paymentLedger) mergedDb.paymentLedger.push(...data.paymentLedger);
+            });
+          }
+
+          const updatedDb = { ...mergedDb, lastFirebaseSync: Date.now() };
+          setDb(updatedDb);
+          lastSyncedDbRef.current = updatedDb;
           setSyncStatus('success');
+          setLastError(null);
           alert("Restore Complete!");
         }
       } else {
@@ -1709,13 +1960,13 @@ const FirebaseSyncPanel = ({ db, setDb }: { db: DatabaseState, setDb: (newDb: Da
     } catch (err) {
       console.error("Firebase Error:", err);
       setSyncStatus('error');
-      alert("Fetch failed. Check your Firebase config and connection.");
+      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      setLastError(msg);
+      alert(`Fetch failed. Check your Firebase config and connection.\n\nError details:\n${msg}`);
     }
   };
 
-  const toggleAutoSync = () => {
-    setDb({ ...db, autoSyncEnabled: !db.autoSyncEnabled, lastUpdated: new Date().toISOString() });
-  };
+
 
   return (
     <div className="flex flex-col gap-6">
@@ -1832,13 +2083,20 @@ const FirebaseSyncPanel = ({ db, setDb }: { db: DatabaseState, setDb: (newDb: Da
               </button>
             </div>
 
-            <button
-              onClick={toggleAutoSync}
-              className={`w-full py-4 rounded-[20px] font-black text-[10px] uppercase tracking-[0.2em] flex items-center justify-center gap-3 transition-all ${db.autoSyncEnabled ? 'bg-[#43A047] text-white' : 'bg-white/5 border border-white/10 text-white/40'}`}
-            >
-              {db.autoSyncEnabled ? <RefreshCw size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-              Auto-Sync: {db.autoSyncEnabled ? 'ON' : 'OFF'}
-            </button>
+            <div className="w-full py-4 rounded-[20px] font-black text-[10px] uppercase tracking-[0.2em] flex items-center justify-center gap-3 bg-[#43A047]/10 border border-[#43A047]/20 text-[#43A047]">
+              <RefreshCw size={16} className="animate-spin" />
+              Auto-Sync: Active
+            </div>
+
+            {lastError && (
+              <div className="bg-red-950/40 border border-red-500/30 p-5 rounded-[24px] flex items-start gap-3 mt-2 text-left backdrop-blur-sm animate-in fade-in duration-300">
+                <AlertCircle size={18} className="text-red-400 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <span className="text-[9px] font-black text-red-300 uppercase tracking-widest block mb-1">Detailed Error Log</span>
+                  <p className="text-[10px] font-mono text-red-200/95 leading-relaxed break-all whitespace-pre-wrap">{lastError}</p>
+                </div>
+              </div>
+            )}
           </div>
 
           {db.lastFirebaseSync && (
@@ -1856,7 +2114,12 @@ const FirebaseSyncPanel = ({ db, setDb }: { db: DatabaseState, setDb: (newDb: Da
   );
 };
 
-const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, onLogout: () => void }) => {
+const ManageView = ({ db, setDb, onLogout, lastSyncedDbRef }: { 
+  db: DatabaseState, 
+  setDb: (db: DatabaseState | ((p: DatabaseState) => DatabaseState)) => void, 
+  onLogout: () => void,
+  lastSyncedDbRef: React.MutableRefObject<DatabaseState | null>
+}) => {
   const [activeTab, setActiveTab] = useState<'products' | 'salesmen' | 'cloud'>('products');
   const [newName, setNewName] = useState('');
   const [newPrice, setNewPrice] = useState('');
@@ -1865,7 +2128,7 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
   const handleAdd = () => {
     if (!newName) return;
     if (activeTab === 'products') {
-      const p: Product = { id: crypto.randomUUID(), name: newName, currentPrice: parseFloat(newPrice) || 0, isActive: true, createdAt: Date.now() };
+      const p: Product = { id: generateUUID(), name: newName, currentPrice: parseFloat(newPrice) || 0, isActive: true, createdAt: Date.now() };
       setDb((prev: DatabaseState) => ({
         ...prev,
         products: [...prev.products, p],
@@ -1877,7 +2140,7 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
         return;
       }
       const s: Salesman = { 
-        id: crypto.randomUUID(), 
+        id: generateUUID(), 
         name: newName, 
         ...(newPhone && { phone: newPhone }),
         isActive: true, 
@@ -1960,7 +2223,7 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
       </div>
 
       {activeTab === 'cloud' ? (
-        <FirebaseSyncPanel db={db} setDb={(newDb: DatabaseState) => setDb(newDb)} />
+        <FirebaseSyncPanel db={db} setDb={(newDb: DatabaseState) => setDb(newDb)} lastSyncedDbRef={lastSyncedDbRef} />
       ) : (
         <>
           <div className="bg-white rounded-[32px] p-8 shadow-sm border border-[#FFF1E0] premium-shadow mb-8">
@@ -1987,41 +2250,40 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
             <h3 className="text-[10px] font-black text-[#A1887F] uppercase tracking-[0.25em] px-2 opacity-40 py-2">Registered Active</h3>
             <div className="flex flex-col gap-3">
               {(activeTab === 'products' ? (db.products as Product[]) : (db.salesmen as Salesman[])).filter(i => i.isActive).map(item => (
-                <div key={item.id} className="bg-white/80 rounded-[28px] p-5 border border-[#FFF1E0] flex items-center justify-between group premium-shadow">
-                  <div className="flex items-center gap-4">
-                    <div className="h-12 w-12 bg-[#FFFBF7] rounded-[18px] flex items-center justify-center text-xl shadow-inner border border-[#FFF1E0]">
+                <div key={item.id} className="bg-white/80 rounded-[28px] p-5 border border-[#FFF1E0] flex items-center justify-between gap-3 group premium-shadow">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className="h-12 w-12 bg-[#FFFBF7] rounded-[18px] flex items-center justify-center text-xl shadow-inner border border-[#FFF1E0] flex-shrink-0">
                       {activeTab === 'products' ? '🍦' : '👤'}
                     </div>
-                    <div className="overflow-hidden">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <div className="font-black text-[#5D4037] text-base leading-none uppercase tracking-tight truncate">{item.name}</div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteEntry(item.id, item.name);
-                          }}
-                          className="p-1 text-[#EF9A9A] hover:text-[#D32F2F] transition-colors"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                      {activeTab === 'products' && <div className="text-[8px] font-black text-[#FF8A65] uppercase tracking-widest opacity-70">Rate: ₹{(item as Product).currentPrice}</div>}
+                    <div className="flex-1 min-w-0 pr-1">
+                      <div className="font-black text-[#5D4037] text-base leading-tight uppercase tracking-tight truncate block">{item.name}</div>
+                      {activeTab === 'products' && <div className="text-[8px] font-black text-[#FF8A65] uppercase tracking-widest opacity-70 mt-0.5">Rate: ₹{(item as Product).currentPrice}</div>}
                       {activeTab === 'salesmen' && (
-                        <div className="flex items-center gap-2 mt-1">
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                           {(item as Salesman).phone ? (
                             <>
-                              <a href={`tel:+91${(item as Salesman).phone}`} className="bg-[#4CAF50] text-white text-[9px] font-bold px-3 py-1 rounded-full flex items-center gap-1 shadow-sm active:scale-95" onClick={e => e.stopPropagation()}>
+                              <a href={`tel:+91${(item as Salesman).phone}`} className="bg-[#4CAF50] text-white text-[9px] font-bold px-3 py-1 rounded-full flex items-center gap-1 shadow-sm active:scale-95 flex-shrink-0" onClick={e => e.stopPropagation()}>
                                 📞 Call
                               </a>
-                              <button onClick={(e) => { e.stopPropagation(); handleUpdatePhone(item.id); }} className="text-[9px] text-[#A1887F] font-bold underline">Edit Phone</button>
+                              <button onClick={(e) => { e.stopPropagation(); handleUpdatePhone(item.id); }} className="text-[9px] text-[#A1887F] font-bold underline flex-shrink-0">Edit Phone</button>
                             </>
                           ) : (
-                            <button onClick={(e) => { e.stopPropagation(); handleUpdatePhone(item.id); }} className="text-[9px] text-[#FF8A65] font-bold underline">Add Phone Number</button>
+                            <button onClick={(e) => { e.stopPropagation(); handleUpdatePhone(item.id); }} className="text-[9px] text-[#FF8A65] font-bold underline flex-shrink-0">Add Phone Number</button>
                           )}
                         </div>
                       )}
                     </div>
                   </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteEntry(item.id, item.name);
+                    }}
+                    className="p-2.5 bg-[#FFEBEE] text-[#D32F2F] rounded-[14px] hover:bg-[#FFCDD2] transition-colors flex-shrink-0 self-center shadow-sm active:scale-95"
+                    title="Delete"
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               ))}
             </div>
@@ -2029,8 +2291,8 @@ const ManageView = ({ db, setDb, onLogout }: { db: DatabaseState, setDb: (db: Da
         </>
       )}
 
-      <button onClick={onLogout} className="mt-12 w-full flex items-center justify-center gap-3 text-[#E57373] font-black uppercase text-[10px] tracking-[0.3em] py-5 border-2 border-dashed border-[#FFEBEE] rounded-[32px] hover:bg-[#FFEBEE] transition-all active:scale-95 flex-shrink-0">
-        <LogOut size={20} /> Secure Logout
+      <button onClick={onLogout} className="mt-12 w-full bg-gradient-to-r from-[#D32F2F] to-[#EF5350] text-white font-black uppercase text-xs tracking-[0.2em] py-4 rounded-[24px] shadow-lg shadow-[#D32F2F]/20 hover:opacity-95 transition-all active:scale-95 flex items-center justify-center gap-2 flex-shrink-0">
+        <LogOut size={18} /> Logout
       </button>
     </div>
   );

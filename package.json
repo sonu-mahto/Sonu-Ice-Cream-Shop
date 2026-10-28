@@ -1,7 +1,7 @@
 {
   "name": "sonu-ice-cream-shop",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,6 @@
     "@capacitor/cli": "^8.1.0",
     "@capacitor/core": "^8.1.0",
     "@capacitor/share": "^8.0.1",
-    "@capgo/capacitor-updater": "^8.45.11",
     "@tailwindcss/vite": "^4.1.18",
     "firebase": "^12.9.0",
     "lucide-react": "^0.564.0",
